@@ -1,0 +1,23 @@
+# Environment variables & API keys
+.env
+.env.local
+
+# Python cache & artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+
+# Logs
+logs/*.log
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# Editor directories
+.vscode/
+.idea/

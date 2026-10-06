@@ -1,0 +1,29 @@
+{
+  "app_name": "Daily News Digest",
+  "aumid": "NewsDigest.DesktopToastApp",
+  "stories_count": 5,
+  "delay_between_notifications_seconds": 8,
+  "digest_interaction_window_seconds": 25,
+  "storage_file": "saved_articles.json",
+  "cache_file": "recent_digest_cache.json",
+  "log_file": "logs/news_digest.log",
+  "gemini_model": "gemini-2.5-flash",
+  "categories": [
+    "India",
+    "World",
+    "Technology",
+    "Artificial Intelligence",
+    "Science",
+    "Business"
+  ],
+  "category_feed_urls": {
+    "India": "https://news.google.com/rss/headlines/section/topic/NATION?hl=en-IN&gl=IN&ceid=IN:en",
+    "World": "https://news.google.com/rss/headlines/section/topic/WORLD?hl=en-US&gl=US&ceid=US:en",
+    "Technology": "https://news.google.com/rss/headlines/section/topic/TECHNOLOGY?hl=en-US&gl=US&ceid=US:en",
+    "Artificial Intelligence": "https://news.google.com/rss/search?q=Artificial+Intelligence&hl=en-US&gl=US&ceid=US:en",
+    "Science": "https://news.google.com/rss/headlines/section/topic/SCIENCE?hl=en-US&gl=US&ceid=US:en",
+    "Business": "https://news.google.com/rss/headlines/section/topic/BUSINESS?hl=en-US&gl=US&ceid=US:en"
+  },
+  "max_candidates_per_category": 5,
+  "request_timeout_seconds": 15
+}
