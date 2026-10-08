@@ -1,6 +1,8 @@
+import sys
 import time
 import logging
 import winreg
+from pathlib import Path
 from typing import List, Dict, Any, Optional, Callable
 from windows_toasts import (
     InteractableWindowsToaster,
@@ -9,7 +11,7 @@ from windows_toasts import (
     ToastActivatedEventArgs
 )
 
-from config import load_config, setup_logger
+from config import BASE_DIR, load_config, setup_logger
 from storage import JsonArticleStorage, DigestCache, save_article_by_id
 
 logger = setup_logger()
@@ -42,6 +44,37 @@ def register_app_aumid(app_id: str, app_name: str) -> bool:
         return False
 
 
+def register_custom_protocol(protocol_name: str = "newsdigest") -> bool:
+    """
+    Registers a custom URI protocol in HKCU (no admin elevation required).
+    This allows Windows Toast protocol activation (e.g. newsdigest://save?id=...)
+    to reliably trigger saving at any time, even after the main digest process has exited.
+    """
+    try:
+        python_dir = Path(sys.executable).parent
+        pythonw_exe = python_dir / "pythonw.exe"
+        if not pythonw_exe.exists():
+            pythonw_exe = Path(sys.executable)
+
+        main_script = BASE_DIR / "main.py"
+        command_str = f'"{pythonw_exe}" "{main_script}" --save-url "%1"'
+
+        key_path = f"Software\\Classes\\{protocol_name}"
+        with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, key_path) as key:
+            winreg.SetValueEx(key, "", 0, winreg.REG_SZ, f"URL:{protocol_name} Protocol")
+            winreg.SetValueEx(key, "URL Protocol", 0, winreg.REG_SZ, "")
+
+        cmd_path = f"{key_path}\\shell\\open\\command"
+        with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, cmd_path) as cmd_key:
+            winreg.SetValueEx(cmd_key, "", 0, winreg.REG_SZ, command_str)
+
+        logger.debug("Registered custom protocol '%s://'.", protocol_name)
+        return True
+    except Exception as e:
+        logger.warning("Failed to register custom protocol '%s': %s", protocol_name, e)
+        return False
+
+
 class NotificationManager:
     """
     Manages Windows toast notifications using InteractableWindowsToaster.
@@ -55,8 +88,9 @@ class NotificationManager:
         self.delay_seconds = self.cfg.get("delay_between_notifications_seconds", 8)
         self.interaction_window = self.cfg.get("digest_interaction_window_seconds", 20)
 
-        # Register AUMID in HKCU for interactive action delivery
+        # Register AUMID and protocol in HKCU for interactive action delivery
         register_app_aumid(self.aumid, self.app_name)
+        register_custom_protocol("newsdigest")
 
         # Initialize InteractableWindowsToaster
         try:
@@ -69,28 +103,46 @@ class NotificationManager:
         self.cache = DigestCache()
 
     def _handle_toast_activated(self, event_args: ToastActivatedEventArgs) -> None:
-        """Callback invoked when user interacts with a toast button without direct protocol launch."""
+        """Callback invoked when user interacts with a toast button during running process."""
         args_str = event_args.arguments or ""
         logger.info("Toast action activated: '%s'", args_str)
 
-        if args_str.startswith("save:"):
+        article_id = None
+        if "id=" in args_str:
+            from urllib.parse import urlparse, parse_qs
+            try:
+                qs = parse_qs(urlparse(args_str).query)
+                if "id" in qs and qs["id"]:
+                    article_id = qs["id"][0].strip()
+            except Exception:
+                pass
+        elif args_str.startswith("save:"):
             article_id = args_str.split("save:", 1)[1].strip()
+
+        if article_id:
             success = save_article_by_id(article_id)
             if success:
                 logger.info("Save-for-later succeeded for article ID: %s", article_id)
-                self._show_save_confirmation(article_id)
+                self.show_save_confirmation(article_id, already_saved=False)
             else:
                 logger.info("Article ID %s was already saved.", article_id)
+                self.show_save_confirmation(article_id, already_saved=True)
 
-    def _show_save_confirmation(self, article_id: str) -> None:
-        """Show a small non-intrusive toast confirming the article was saved."""
+    def show_save_confirmation(self, article_id: str, already_saved: bool = False) -> None:
+        """Show a small non-intrusive toast confirming the article was saved or already saved."""
         try:
             story = self.cache.get_cached_story(article_id)
             title = story.get("title", "Article") if story else "Article"
-            confirm_toast = Toast([
-                "Bookmark Saved",
-                f"Saved to your reading list: {title[:60]}..."
-            ])
+            if already_saved:
+                confirm_toast = Toast([
+                    "Already in Reading List",
+                    f"'{title[:50]}...' is already bookmarked."
+                ])
+            else:
+                confirm_toast = Toast([
+                    "Bookmark Saved",
+                    f"Saved to reading list: {title[:50]}..."
+                ])
             self.toaster.show_toast(confirm_toast)
         except Exception as e:
             logger.debug("Failed to display save confirmation toast: %s", e)
@@ -111,6 +163,10 @@ class NotificationManager:
             display_body
         ]
 
+        # Clicking the toast body directly launches the article URL
+        if article_url:
+            toast.launch_action = article_url
+
         # ----------------------------------------------------
         # 1. READ ARTICLE (Tested direct URL protocol launch)
         # ----------------------------------------------------
@@ -122,16 +178,18 @@ class NotificationManager:
         toast.AddAction(read_button)
 
         # ----------------------------------------------------
-        # 2. SAVE FOR LATER (Interactable action)
+        # 2. SAVE FOR LATER (Protocol activation - works 24/7)
         # ----------------------------------------------------
         if article_id:
+            save_url = f"newsdigest://save?id={article_id}"
             save_button = ToastButton(
                 content="Save for Later",
-                arguments=f"save:{article_id}"
+                arguments=save_url,
+                launch=save_url
             )
             toast.AddAction(save_button)
 
-        # Attach activation listener
+        # Attach in-memory activation listener
         toast.on_activated = self._handle_toast_activated
 
         return toast

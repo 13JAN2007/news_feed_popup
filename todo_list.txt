@@ -1,0 +1,3 @@
+Todo list->
+-if possible improve the ui
+-add the application to the task scheduler

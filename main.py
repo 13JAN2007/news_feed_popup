@@ -210,6 +210,11 @@ def main() -> None:
         help="Save an article by ID to saved_articles.json"
     )
     parser.add_argument(
+        "--save-url",
+        type=str,
+        help="Handle custom protocol URL from Windows Toast (e.g. newsdigest://save?id=XYZ)"
+    )
+    parser.add_argument(
         "--list-saved",
         action="store_true",
         help="List all saved articles"
@@ -221,6 +226,36 @@ def main() -> None:
     if args.test:
         success = run_all_tests()
         sys.exit(0 if success else 1)
+
+    if args.save_url:
+        from urllib.parse import urlparse, parse_qs
+        url_input = args.save_url.strip()
+        article_id = None
+        if "id=" in url_input:
+            try:
+                qs = parse_qs(urlparse(url_input).query)
+                if "id" in qs and qs["id"]:
+                    article_id = qs["id"][0].strip()
+            except Exception:
+                pass
+        if not article_id and "save:" in url_input:
+            article_id = url_input.split("save:", 1)[1].strip()
+        if not article_id and url_input.startswith("newsdigest:"):
+            clean_part = url_input.replace("newsdigest://", "").replace("newsdigest:", "")
+            if "id=" in clean_part:
+                article_id = clean_part.split("id=", 1)[1].split("&", 1)[0].strip()
+
+        if article_id:
+            res = save_article_by_id(article_id)
+            logger.info("Protocol activation save result for ID '%s': %s", article_id, res)
+            try:
+                notif = NotificationManager()
+                notif.show_save_confirmation(article_id, already_saved=not res)
+            except Exception as ce:
+                logger.debug("Failed to pop save confirmation: %s", ce)
+        else:
+            logger.warning("Could not extract article ID from protocol URL: %s", url_input)
+        sys.exit(0)
 
     if args.save:
         res = save_article_by_id(args.save)

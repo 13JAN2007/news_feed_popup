@@ -22,7 +22,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "storage_file": "saved_articles.json",
     "cache_file": "recent_digest_cache.json",
     "log_file": "logs/news_digest.log",
-    "gemini_model": "gemini-2.5-flash",
+    "gemini_model": "gemini-3.8-flash",
     "categories": [
         "India",
         "World",

@@ -16,7 +16,7 @@ class AISummarizer:
 
     def __init__(self, model_name: Optional[str] = None):
         cfg = load_config()
-        self.model_name = model_name or cfg.get("gemini_model", "gemini-2.5-flash")
+        self.model_name = model_name or cfg.get("gemini_model", "gemini-3.8-flash")
         self.api_key = get_gemini_api_key()
         self._client = None
 
@@ -76,50 +76,67 @@ Return ONLY a valid JSON array matching this exact schema:
         return prompt
 
     def summarize_with_gemini(self, articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Call Gemini to summarize articles and parse JSON output."""
+        """Call Gemini to summarize articles with multi-model fallback and retry for 503 errors."""
         if not self._client:
             raise RuntimeError("Gemini client is not initialized or GEMINI_API_KEY is missing.")
 
         prompt = self._build_prompt(articles)
-        logger.info("Sending %d articles to Gemini (%s) for summarization...", len(articles), self.model_name)
 
-        try:
-            from google.genai import types
+        # Candidate models to try in order of preference if primary experiences high demand (503)
+        candidate_models = [self.model_name]
+        for fallback_m in ["gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.8-flash"]:
+            if fallback_m not in candidate_models:
+                candidate_models.append(fallback_m)
 
-            response = self._client.models.generate_content(
-                model=self.model_name,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json"
-                )
-            )
+        from google.genai import types
+        import time
 
-            response_text = response.text.strip()
-            # Parse JSON
-            parsed_data = json.loads(response_text)
-            if not isinstance(parsed_data, list):
-                raise ValueError("Expected JSON array from Gemini response")
+        last_error = None
+        for model_to_try in candidate_models:
+            logger.info("Attempting summarization of %d articles with model '%s'...", len(articles), model_to_try)
+            for attempt in range(1, 3):
+                try:
+                    response = self._client.models.generate_content(
+                        model=model_to_try,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            response_mime_type="application/json"
+                        )
+                    )
 
-            logger.info("Successfully received Gemini summary for %d articles.", len(parsed_data))
+                    response_text = response.text.strip()
+                    parsed_data = json.loads(response_text)
+                    if not isinstance(parsed_data, list):
+                        raise ValueError("Expected JSON array from Gemini response")
 
-            # Merge with original articles
-            id_to_summary = {str(item.get("id")): item for item in parsed_data}
-            summarized_articles = []
-            for a in articles:
-                aid = str(a.get("id"))
-                sum_info = id_to_summary.get(aid, {})
-                merged = a.copy()
-                merged["summary_title"] = sum_info.get("title") or a.get("title")
-                merged["summary"] = sum_info.get("summary") or self._fallback_summary(a)
-                merged["importance"] = sum_info.get("importance", 5)
-                summarized_articles.append(merged)
+                    logger.info("Successfully received Gemini summary for %d articles using '%s'.", len(parsed_data), model_to_try)
 
-            return summarized_articles
+                    # Merge with original articles
+                    id_to_summary = {str(item.get("id")): item for item in parsed_data}
+                    summarized_articles = []
+                    for a in articles:
+                        aid = str(a.get("id"))
+                        sum_info = id_to_summary.get(aid, {})
+                        merged = a.copy()
+                        merged["summary_title"] = sum_info.get("title") or a.get("title")
+                        merged["summary"] = sum_info.get("summary") or self._fallback_summary(a)
+                        merged["importance"] = sum_info.get("importance", 5)
+                        summarized_articles.append(merged)
 
-        except Exception as e:
-            # Do NOT log API key
-            logger.error("Gemini summarization failed: %s. Falling back to RSS metadata.", e)
-            return self.summarize_with_fallback(articles)
+                    return summarized_articles
+
+                except Exception as e:
+                    last_error = e
+                    err_msg = str(e)
+                    if "503" in err_msg or "high demand" in err_msg.lower() or "timeout" in err_msg.lower():
+                        logger.warning("Model '%s' temporarily busy (attempt %d/2): %s. Backing off...", model_to_try, attempt, e)
+                        time.sleep(1.5)
+                    else:
+                        logger.warning("Model '%s' failed: %s. Trying next model...", model_to_try, e)
+                        break
+
+        logger.error("All Gemini model attempts exhausted. Last error: %s. Falling back to RSS metadata.", last_error)
+        return self.summarize_with_fallback(articles)
 
     def _fallback_summary(self, article: Dict[str, Any]) -> str:
         """Create a clean fallback summary from RSS snippet and metadata."""

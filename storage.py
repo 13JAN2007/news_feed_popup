@@ -136,11 +136,23 @@ class DigestCache:
         cfg = load_config()
         self.cache_path = cache_path or (BASE_DIR / cfg.get("cache_file", "recent_digest_cache.json"))
 
-    def save_cache(self, stories: List[Dict[str, Any]]) -> None:
+    def save_cache(self, stories: List[Dict[str, Any]], max_cached: int = 100) -> None:
+        """Merge stories into rolling cache buffer, preserving earlier runs for late clicks."""
         try:
+            existing = self.get_all_cached()
+            new_ids = {str(s.get("id") or s.get("article_id")) for s in stories}
+
+            # New stories first, followed by previous cached stories
+            combined = list(stories)
+            for old in existing:
+                old_id = str(old.get("id") or old.get("article_id"))
+                if old_id not in new_ids:
+                    combined.append(old)
+
+            trimmed = combined[:max_cached]
             with open(self.cache_path, "w", encoding="utf-8") as f:
-                json.dump(stories, f, indent=2, ensure_ascii=False)
-            logger.info("Cached %d digest stories for fast interaction lookup.", len(stories))
+                json.dump(trimmed, f, indent=2, ensure_ascii=False)
+            logger.info("Cached %d total stories in rolling cache for interaction lookup.", len(trimmed))
         except Exception as e:
             logger.error("Failed to write digest cache %s: %s", self.cache_path, e)
 
